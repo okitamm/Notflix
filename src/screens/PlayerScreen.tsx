@@ -102,7 +102,7 @@ export default function PlayerScreen({ navigation, route }: any) {
   const hasPinched = useRef(false);
   const lastTapTime = useRef(0);
   const singleTapTimeout = useRef<any>(null);
-  const lastTapX = useRef(0); // 🚀 Restored variable
+  const lastTapX = useRef(0); 
   const progressBarWidth = useRef(0);
 
   const player = useVideoPlayer(null, (player) => {
@@ -154,7 +154,6 @@ export default function PlayerScreen({ navigation, route }: any) {
     if (id) loadMovieMagic();
   }, [id, mediaType, player]);
 
-  // 🚀 PAUSE LOGIC FOR FULLSCREEN MODALS
   useEffect(() => {
     if (!player) return;
     if (activeModal === "server" || activeModal === "audioSub") {
@@ -180,17 +179,17 @@ export default function PlayerScreen({ navigation, route }: any) {
     })();
   }, []);
 
-  // 🚀 INSTANT HUD HIDING
+  // 🚀 FASTER ANIMATIONS: Dropped duration from 300ms to 200ms
   useEffect(() => {
     Animated.parallel([
       Animated.timing(controlsOpacity, {
         toValue: showControls && !isLocked && !isScraping && !streamError && !activeModal ? 1 : 0,
-        duration: activeModal ? 0 : 300, 
+        duration: activeModal ? 0 : 60,
         useNativeDriver: true,
       }),
       Animated.timing(lockedControlsOpacity, {
         toValue: showControls && isLocked && !isScraping && !streamError && !activeModal ? 1 : 0,
-        duration: activeModal ? 0 : 300,
+        duration: activeModal ? 0 : 60,
         useNativeDriver: true,
       }),
     ]).start();
@@ -332,24 +331,30 @@ export default function PlayerScreen({ navigation, route }: any) {
         if (gestureZone.current === "brightness") { applyBrightness(newValue); showIndicator("brightness"); } 
         else if (gestureZone.current === "volume") { applyVolume(newValue); showIndicator("volume"); }
       },
+      // 🚀 FASTER TAP DETECTION
       onPanResponderRelease: (_, gestureState) => {
         if (streamErrorRef.current || modalRef.current) return; 
         const wasDrag = Math.abs(gestureState.dy) > DRAG_THRESHOLD || Math.abs(gestureState.dx) > DRAG_THRESHOLD;
+        
         if (isLockedRef.current || isScrapingRef.current) {
           if (!wasDrag && !isScrapingRef.current) setShowControls((prev) => !prev);
           return;
         }
+
         if (hasPinched.current) { gestureZone.current = null; initialPinchDistance.current = null; hasPinched.current = false; return; }
+        
         if (!wasDrag) {
           const now = Date.now();
           const absoluteX = gestureState.x0; 
-          if (now - lastTapTime.current < 300) {
+          
+          if (now - lastTapTime.current < 250) {
             clearTimeout(singleTapTimeout.current);
+            setShowControls(true);
             if (absoluteX < widthRef.current / 2) handleSeek("rewind"); else handleSeek("forward");
-            lastTapTime.current = now; 
+            lastTapTime.current = 0; 
           } else {
             lastTapTime.current = now;
-            singleTapTimeout.current = setTimeout(() => setShowControls((prev) => !prev), 300);
+            singleTapTimeout.current = setTimeout(() => setShowControls((prev) => !prev), 60);
           }
         } else { hideIndicatorSoon(); }
         gestureZone.current = null;
@@ -370,7 +375,6 @@ export default function PlayerScreen({ navigation, route }: any) {
 
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,0.01)" }]} {...panResponder.panHandlers} />
 
-      {/* 🚀 EXPLICIT UNMOUNT: HUD disappears instantly */}
       {!activeModal && (
         <Animated.View 
           style={[StyleSheet.absoluteFill, { opacity: controlsOpacity }]} 
@@ -384,7 +388,9 @@ export default function PlayerScreen({ navigation, route }: any) {
               <View style={styles.headerTitleContainer}>
                 <Text style={styles.headerTitle} numberOfLines={1}>{title || "Loading..."}</Text>
               </View>
-              <TouchableOpacity style={styles.headerIcon} onPress={() => { setIsLocked(true); setShowControls(false); }}>
+              
+              {/* 🚀 FIXED LOCK BUTTON: Keeps HUD visible long enough to show lock animation */}
+              <TouchableOpacity style={styles.headerIcon} onPress={() => { setIsLocked(true); setShowControls(true); }}>
                 <Feather name="unlock" size={22} color="#fff" />
               </TouchableOpacity>
             </View>
@@ -464,6 +470,20 @@ export default function PlayerScreen({ navigation, route }: any) {
           </LinearGradient>
         </Animated.View>
       )}
+
+      {/* 🚀 FIXED LOCK OVERLAY: Stripped black background */}
+      <Animated.View 
+        style={[styles.lockedOverlay, { opacity: lockedControlsOpacity }]} 
+        pointerEvents={showControls && isLocked && !isScraping && !streamError && !activeModal ? "box-none" : "none"}
+      >
+        <View style={styles.lockedBottomContainer}>
+          <TouchableOpacity style={styles.unlockCircleButton} onPress={() => setIsLocked(false)}>
+            <Feather name="lock" size={20} color="#000" />
+          </TouchableOpacity>
+          <Text style={styles.screenLockedText}>Screen Locked</Text>
+          <Text style={styles.tapToUnlockText}>Tap to Unlock</Text>
+        </View>
+      </Animated.View>
 
       {isScraping && (
         <View style={styles.scrapingOverlay} pointerEvents="none">
@@ -555,4 +575,11 @@ const styles = StyleSheet.create({
   bottomTools: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 40, marginHorizontal: Platform.OS === "ios" ? 45 : 25 },
   toolButton: { flexDirection: "row", alignItems: "center", gap: 8 },
   toolText: { color: "#fff", fontSize: 12, fontWeight: "600" },
+
+  // 🚀 FIXED LOCK OVERLAY UI
+  lockedOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", alignItems: "center", paddingBottom: 45 },
+  lockedBottomContainer: { alignItems: "center" },
+  unlockCircleButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#fff", justifyContent: "center", alignItems: "center", marginBottom: 10 },
+  screenLockedText: { color: "#fff", fontSize: 15, fontWeight: "700", marginBottom: 2 },
+  tapToUnlockText: { color: "#999", fontSize: 11, fontWeight: "500" },
 });
