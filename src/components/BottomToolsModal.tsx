@@ -6,6 +6,7 @@ import {
   Modal,
   ScrollView,
   StyleSheet,
+  PanResponder,
   useWindowDimensions,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
@@ -72,17 +73,21 @@ export default function BottomToolsModal({
     }
   }, [activeModal, currentServerIndex, selectedAudioId, selectedSubtitleId, audioTracks, subtitleTracks]);
 
-  function handleApplyServer() {
-    changeServer(draftServerIndex);
+  // 🚀 UNIFIED APPLY LOGIC
+  function handleUnifiedApply() {
+    if (activeModal === "server") {
+      changeServer(draftServerIndex);
+    } else if (activeModal === "audioSub") {
+      onApplyAudioSubtitle?.(draftAudio, draftSubtitle);
+    }
     setActiveModal(null);
   }
 
-  function handleApplyAudioSub() {
-    onApplyAudioSubtitle?.(draftAudio, draftSubtitle);
-    setActiveModal(null);
-  }
+  // Speed Slider Math
+  const normalFraction = (1 - SPEED_MIN) / (SPEED_MAX - SPEED_MIN);
+  const valueFraction = (playbackRate - SPEED_MIN) / (SPEED_MAX - SPEED_MIN);
+  const sliderStartX = useRef(0);
 
-  // 🚀 ULTRA-RESPONSIVE DRAG LOGIC (Progress Bar Style)
   const sliderWidthRef = useRef(0);
   const progressPercent = ((playbackRate - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)) * 100;
 
@@ -116,8 +121,6 @@ export default function BottomToolsModal({
           />
           <View style={styles.speedBottomContainer}>
             <View style={styles.speedWrap}>
-              
-              {/* Massive Touch Area for flawless dragging */}
               <View 
                 style={[styles.sliderTouchArea, { width: sliderWidth }]}
                 onLayout={(e) => (sliderWidthRef.current = e.nativeEvent.layout.width)}
@@ -129,12 +132,9 @@ export default function BottomToolsModal({
                 <View style={styles.sliderTrackBg} pointerEvents="none">
                   <View style={[styles.sliderTrackFill, { width: `${progressPercent}%` }]} />
                 </View>
-                
-                {/* 🚀 ONLY ONE THICK HANDLE - No extra 1x line left behind */}
                 <View style={[styles.sliderThickHandle, { left: `${progressPercent}%` }]} pointerEvents="none" />
               </View>
 
-              {/* Labels below the track */}
               <View style={[styles.sliderLabels, { width: sliderWidth }]} pointerEvents="box-none">
                 {SPEED_MARKS.map((mark) => (
                   <TouchableOpacity 
@@ -149,66 +149,59 @@ export default function BottomToolsModal({
                   </TouchableOpacity>
                 ))}
               </View>
-
             </View>
           </View>
         </View>
       )}
 
       {/* =======================
-          SERVER / AUDIO & SUB (Solid Black)
+          SERVER / AUDIO & SUB
           ======================= */}
       {(activeModal === "server" || activeModal === "audioSub") && (
         <View style={styles.solidBlackout}>
           
+          {/* Main Grid Wrapper */}
           <View style={styles.centerContainer}>
             
-            {/* SERVER UI */}
-            {activeModal === "server" && (
-              <View style={styles.contentBlock}>
-                <Text style={styles.mainHeader}>Select Server</Text>
-                <View style={styles.serverListWrap}>
-                  <ScrollView showsVerticalScrollIndicator={false}>
-                    {availableServers.map((server, index) => {
-                      const alias = SERVER_ALIASES[index % SERVER_ALIASES.length];
-                      const isActive = draftServerIndex === index;
-                      return (
-                        <TouchableOpacity key={index} style={styles.checkRow} onPress={() => setDraftServerIndex(index)}>
-                          <View style={styles.checkIconWrap}>
-                            {isActive && <Feather name="check" size={24} color="#fff" />}
-                          </View>
-                          <Text style={[styles.checkLabel, isActive && styles.checkLabelActive]}>
-                            {alias} {server.quality ? `[${server.quality}]` : ""}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                    {availableServers.length === 0 && (
-                      <Text style={[styles.checkLabel, { marginLeft: 44 }]}>No alternative servers available.</Text>
-                    )}
-                  </ScrollView>
-                </View>
-                
-                <View style={styles.actionButtonsRow}>
-                  <TouchableOpacity style={styles.cancelBtn} onPress={() => setActiveModal(null)}>
-                    <Text style={styles.cancelBtnText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.applyBtn} onPress={handleApplyServer}>
-                    <Text style={styles.applyBtnText}>Apply</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+            {/* Dynamic Content Area (Fills space above buttons) */}
+            <View style={styles.contentBlock}>
+              
+              {/* SERVER UI */}
+              {activeModal === "server" && (
+                <>
+                  <Text style={styles.mainHeader}>Select Server</Text>
+                  <View style={styles.serverListWrap}>
+                    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollPadding}>
+                      {availableServers.map((server, index) => {
+                        const alias = SERVER_ALIASES[index % SERVER_ALIASES.length];
+                        const isActive = draftServerIndex === index;
+                        return (
+                          <TouchableOpacity key={index} style={styles.checkRow} onPress={() => setDraftServerIndex(index)}>
+                            <View style={styles.checkIconWrap}>
+                              {isActive && <Feather name="check" size={24} color="#fff" />}
+                            </View>
+                            <Text style={[styles.checkLabel, isActive && styles.checkLabelActive]}>
+                              {alias} {server.quality ? `[${server.quality}]` : ""}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                      {availableServers.length === 0 && (
+                        <Text style={[styles.checkLabel, { marginLeft: 44 }]}>No alternative servers available.</Text>
+                      )}
+                    </ScrollView>
+                  </View>
+                </>
+              )}
 
-            {/* AUDIO & SUBTITLES UI */}
-            {activeModal === "audioSub" && (
-              <View style={styles.contentBlock}>
+              {/* AUDIO & SUBTITLES UI */}
+              {activeModal === "audioSub" && (
                 <View style={styles.twoColumnGrid}>
                   
                   {/* Left Audio Column */}
                   <View style={styles.column}>
                     <Text style={styles.columnHeader}>Audio</Text>
-                    <ScrollView showsVerticalScrollIndicator={false}>
+                    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollPadding}>
                       {audioTracks.length > 0 ? audioTracks.map((track) => {
                         const isActive = track.id === draftAudio;
                         return (
@@ -228,7 +221,7 @@ export default function BottomToolsModal({
                   {/* Right Subtitle Column */}
                   <View style={styles.column}>
                     <Text style={styles.columnHeader}>Subtitles</Text>
-                    <ScrollView showsVerticalScrollIndicator={false}>
+                    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollPadding}>
                       {subtitleTracks.length > 0 ? subtitleTracks.map((track) => {
                         const isActive = track.id === draftSubtitle;
                         return (
@@ -246,17 +239,18 @@ export default function BottomToolsModal({
                   </View>
                   
                 </View>
+              )}
+            </View>
 
-                <View style={styles.actionButtonsRow}>
-                  <TouchableOpacity style={styles.cancelBtn} onPress={() => setActiveModal(null)}>
-                    <Text style={styles.cancelBtnText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.applyBtn} onPress={handleApplyAudioSub}>
-                    <Text style={styles.applyBtnText}>Apply</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+            {/* 🚀 UNIFIED, STATIC ACTION BUTTONS */}
+            <View style={styles.actionButtonsRow}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setActiveModal(null)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.applyBtn} onPress={handleUnifiedApply}>
+                <Text style={styles.applyBtnText}>Apply</Text>
+              </TouchableOpacity>
+            </View>
 
           </View>
         </View>
@@ -291,7 +285,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sliderTouchArea: {
-    height: 40, // Massive hitbox for smooth dragging
+    height: 40, 
     justifyContent: "center",
   },
   sliderTrackBg: {
@@ -299,7 +293,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#666",
     borderRadius: 3,
     flexDirection: "row",
-    overflow: "hidden", // Keeps the active white fill rounded
+    overflow: "hidden", 
   },
   sliderTrackFill: {
     height: "100%",
@@ -352,13 +346,13 @@ const styles = StyleSheet.create({
   centerContainer: {
     width: "85%",
     maxWidth: 900,
-    height: "80%",
-    justifyContent: "center",
+    height: "80%", // Fixed layout box
+    position: "relative", // Required to anchor the buttons at the bottom
   },
   contentBlock: {
-    width: "100%",
-    height: "100%",
+    flex: 1,
     justifyContent: "center",
+    paddingBottom: 70, // Leaves exact space so scroll items don't hide behind buttons
   },
   mainHeader: {
     color: "#fff",
@@ -370,13 +364,13 @@ const styles = StyleSheet.create({
   serverListWrap: {
     width: 400,
     alignSelf: "center",
-    maxHeight: "60%",
+    flex: 1, // Allows it to scale naturally and scroll if needed
   },
   twoColumnGrid: {
     flexDirection: "row",
     justifyContent: "center",
     width: "100%",
-    maxHeight: "75%",
+    flex: 1,
     gap: 40,
   },
   column: {
@@ -388,7 +382,10 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "700",
     marginBottom: 20,
-    marginLeft: 44, // Align with text past the checkmark
+    marginLeft: 44, 
+  },
+  scrollPadding: {
+    paddingBottom: 20, // Final bit of padding inside the scrollview
   },
   checkRow: {
     flexDirection: "row",
@@ -409,13 +406,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  // === ACTION BUTTONS ===
+  // 🚀 FIXED ACTION BUTTONS
   actionButtonsRow: {
+    position: "absolute",
+    bottom: 0,
+    right: "5%",
     flexDirection: "row",
-    justifyContent: "flex-end",
-    marginTop: 40,
     gap: 16,
-    paddingRight: "5%",
   },
   cancelBtn: {
     backgroundColor: "#2a2a2a",
