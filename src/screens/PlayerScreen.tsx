@@ -11,11 +11,14 @@ import {
   Text,
   ActivityIndicator,
 } from "react-native";
-import { Ionicons, Feather, MaterialIcons } from "@expo/vector-icons";
+import { Ionicons, Feather } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as ScreenOrientation from "expo-screen-orientation";
 import * as Brightness from "expo-brightness";
 import { useVideoPlayer, VideoView } from "expo-video";
+
+// IMPORT YOUR NEW COMPONENT HERE:
+import BottomToolsModal from "../components/BottomToolsModal";
 
 const DRAG_THRESHOLD = 6;
 const GESTURE_SENSITIVITY = 220;
@@ -52,14 +55,20 @@ export default function PlayerScreen({ navigation, route }: any) {
   const [brightness, setBrightness] = useState(0.5);
   const [volume, setVolume] = useState(0.7);
 
+  const [availableServers, setAvailableServers] = useState<any[]>([]);
+  const [currentServerIndex, setCurrentServerIndex] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [activeModal, setActiveModal] = useState<"server" | "speed" | "audioSub" | null>(null);
+
   const isLockedRef = useRef(isLocked);
   const brightnessRef = useRef(brightness);
   const volumeRef = useRef(volume);
   const widthRef = useRef(width);
-  
   const isScrapingRef = useRef(isScraping);
   const streamErrorRef = useRef(streamError);
+  const modalRef = useRef(activeModal);
 
+  // TODO: Move this to an environment variable so the app doesn't break if the local router IP changes
   const API_URL = 'http://192.168.0.101:3000'; 
   const getApiHost = (url: string) => {
     try {
@@ -77,7 +86,8 @@ export default function PlayerScreen({ navigation, route }: any) {
     widthRef.current = width;
     isScrapingRef.current = isScraping;
     streamErrorRef.current = streamError;
-  }, [isLocked, brightness, volume, width, isScraping, streamError]);
+    modalRef.current = activeModal;
+  }, [isLocked, brightness, volume, width, isScraping, streamError, activeModal]);
 
   const controlsOpacity = useRef(new Animated.Value(1)).current;
   const lockedControlsOpacity = useRef(new Animated.Value(0)).current;
@@ -101,7 +111,25 @@ export default function PlayerScreen({ navigation, route }: any) {
 
   const player = useVideoPlayer(null, (player) => {
     player.loop = true;
+    player.playbackRate = playbackRate;
   });
+
+  const extractSourceUrl = (rawUrl: string) => {
+    let sourceObj: any = rawUrl;
+    if (rawUrl.includes('/v1/proxy?data=')) {
+      try {
+        const encodedData = rawUrl.split('/v1/proxy?data=')[1];
+        const decodedJson = JSON.parse(decodeURIComponent(encodedData));
+        sourceObj = { uri: decodedJson.url, headers: decodedJson.headers };
+      } catch (e) {
+        console.error("Failed to unpack proxy payload:", e);
+      }
+    } else {
+      const activeHost = getApiHost(API_URL);
+      sourceObj = rawUrl.replace("localhost:3000", activeHost);
+    }
+    return sourceObj;
+  };
 
   useEffect(() => {
     async function loadMovieMagic() {
@@ -117,56 +145,31 @@ export default function PlayerScreen({ navigation, route }: any) {
         const data = await response.json();
         
         if (data.sources && data.sources.length > 0) {
-          let rawUrl = data.sources[0].url;
-          let sourceObj: any = rawUrl;
+          setAvailableServers(data.sources);
+          setCurrentServerIndex(0);
           
-          if (rawUrl.includes('/v1/proxy?data=')) {
-            try {
-              const encodedData = rawUrl.split('/v1/proxy?data=')[1];
-              const decodedJson = JSON.parse(decodeURIComponent(encodedData));
-              sourceObj = {
-                uri: decodedJson.url,
-                headers: decodedJson.headers
-              };
-            } catch (e) {
-              console.error("Failed to unpack proxy payload:", e);
-            }
-          } else {
-            const activeHost = getApiHost(API_URL);
-            sourceObj = rawUrl.replace("localhost:3000", activeHost);
-          }
+          const sourceObj = extractSourceUrl(data.sources[0].url);
 
           if (player) {
             await player.replaceAsync(sourceObj);
             player.play();
           }
         } else {
-          setStreamError("We're having trouble playing this title right now. Please try again later or select a different title.");
+          setStreamError("We're having trouble playing this title right now.");
         }
       } catch (err: any) {
-        setStreamError("We're having trouble playing this title right now. Please try again later or select a different title.");
+        setStreamError("Could not connect to the CinePro server.");
       } finally {
         setIsScraping(false);
       }
     }
 
-    if (id) {
-      loadMovieMagic();
-    } else {
-      setIsScraping(false);
-      setStreamError("Invalid Title ID provided.");
-    }
+    if (id) loadMovieMagic();
   }, [id, mediaType, player]);
 
   useEffect(() => {
-    async function lockLandscape() {
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-    }
-    lockLandscape();
-
-    return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-    };
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    return () => { ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP); };
   }, []);
 
   useEffect(() => {
@@ -197,11 +200,11 @@ export default function PlayerScreen({ navigation, route }: any) {
   }, [showControls, isLocked, isScraping, streamError]);
 
   useEffect(() => {
-    if (showControls && isPlaying && !isDraggingProgress && !indicator && !isScraping && !streamError) {
+    if (showControls && isPlaying && !isDraggingProgress && !indicator && !isScraping && !streamError && !activeModal) {
       const timer = setTimeout(() => setShowControls(false), 5000);
       return () => clearTimeout(timer);
     }
-  }, [showControls, isPlaying, isLocked, isDraggingProgress, indicator, isScraping, streamError]);
+  }, [showControls, isPlaying, isLocked, isDraggingProgress, indicator, isScraping, streamError, activeModal]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -220,8 +223,34 @@ export default function PlayerScreen({ navigation, route }: any) {
     setIsPlaying(!isPlaying);
   }
 
+  const changeServer = async (index: number) => {
+    if (!player || index === currentServerIndex) return;
+    setCurrentServerIndex(index);
+    setActiveModal(null);
+    setIsScraping(true);
+
+    try {
+      const sourceObj = extractSourceUrl(availableServers[index].url);
+      const savedTime = player.currentTime;
+      
+      await player.replaceAsync(sourceObj);
+      player.currentTime = savedTime;
+      player.play();
+    } catch (e) {
+      console.error("Failed to switch server", e);
+    } finally {
+      setIsScraping(false);
+    }
+  };
+
+  const changeSpeed = (rate: number) => {
+    setPlaybackRate(rate);
+    if (player) player.playbackRate = rate;
+    setActiveModal(null);
+  };
+
   function handleSeek(direction: "rewind" | "forward") {
-    if (streamErrorRef.current || isScrapingRef.current) return;
+    if (streamErrorRef.current || isScrapingRef.current || modalRef.current) return;
     
     setShowControls(true);
     const increment = direction === "rewind" ? -10 : 10;
@@ -272,9 +301,7 @@ export default function PlayerScreen({ navigation, route }: any) {
 
   async function applyBrightness(value: number) {
     setBrightness(value);
-    try {
-      await Brightness.setBrightnessAsync(value);
-    } catch (err) {}
+    try { await Brightness.setBrightnessAsync(value); } catch (err) {}
   }
 
   function applyVolume(value: number) {
@@ -286,12 +313,11 @@ export default function PlayerScreen({ navigation, route }: any) {
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_, gestureState) => {
-        if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current) return false; 
+        if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current || modalRef.current) return false; 
         return Math.abs(gestureState.dy) > DRAG_THRESHOLD || Math.abs(gestureState.dx) > DRAG_THRESHOLD;
       },
       onPanResponderGrant: (evt) => {
-        if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current) return;
-
+        if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current || modalRef.current) return;
         const touches = evt.nativeEvent.touches;
         hasPinched.current = touches.length >= 2;
         
@@ -307,14 +333,12 @@ export default function PlayerScreen({ navigation, route }: any) {
         }
       },
       onPanResponderMove: (evt, gestureState) => {
-        if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current) return;
-
+        if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current || modalRef.current) return;
         const touches = evt.nativeEvent.touches;
 
         if (touches.length >= 2) {
           hasPinched.current = true;
           gestureZone.current = "pinch";
-
           const dx = touches[0].pageX - touches[1].pageX;
           const dy = touches[0].pageY - touches[1].pageY;
           const currentDistance = Math.sqrt(dx * dx + dy * dy);
@@ -344,7 +368,7 @@ export default function PlayerScreen({ navigation, route }: any) {
         }
       },
       onPanResponderRelease: (_, gestureState) => {
-        if (streamErrorRef.current) return; 
+        if (streamErrorRef.current || modalRef.current) return; 
 
         const wasDrag = Math.abs(gestureState.dy) > DRAG_THRESHOLD || Math.abs(gestureState.dx) > DRAG_THRESHOLD;
 
@@ -404,6 +428,16 @@ export default function PlayerScreen({ navigation, route }: any) {
 
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,0.01)" }]} {...panResponder.panHandlers} />
 
+      <BottomToolsModal 
+        activeModal={activeModal}
+        setActiveModal={setActiveModal}
+        availableServers={availableServers}
+        currentServerIndex={currentServerIndex}
+        changeServer={changeServer}
+        playbackRate={playbackRate}
+        changeSpeed={changeSpeed}
+      />
+
       {isScraping && (
         <View style={styles.scrapingOverlay} pointerEvents="none">
           <ActivityIndicator size="large" color="#E50914" style={{ transform: [{ scale: 1.5 }], marginBottom: 20 }} />
@@ -418,7 +452,6 @@ export default function PlayerScreen({ navigation, route }: any) {
             <Text style={styles.errorTitle}>Whoops, something went wrong...</Text>
             <Text style={styles.errorText}>{streamError}</Text>
             <Text style={styles.errorCode}>Error Code: UI-800-3</Text>
-            
             <TouchableOpacity style={styles.errorButton} onPress={() => navigation.goBack()}>
               <Text style={styles.errorButtonText}>Back to Browse</Text>
             </TouchableOpacity>
@@ -427,43 +460,21 @@ export default function PlayerScreen({ navigation, route }: any) {
       )}
 
       {seekFeedback && !isScraping && !streamError && (
-        <View 
-          style={[styles.seekFeedback, seekFeedback.side === "left" ? styles.seekFeedbackLeft : styles.seekFeedbackRight]} 
-          pointerEvents="none"
-        >
-          <Text style={styles.seekFeedbackText}>
-            {seekFeedback.amount > 0 ? `+${seekFeedback.amount}` : `${seekFeedback.amount}`}
-          </Text>
+        <View style={[styles.seekFeedback, seekFeedback.side === "left" ? styles.seekFeedbackLeft : styles.seekFeedbackRight]} pointerEvents="none">
+          <Text style={styles.seekFeedbackText}>{seekFeedback.amount > 0 ? `+${seekFeedback.amount}` : `${seekFeedback.amount}`}</Text>
         </View>
       )}
 
       {indicator && !isLocked && !isScraping && !streamError && (
-        <Animated.View
-          style={[
-            styles.gestureIndicator,
-            {
-              opacity: indicatorOpacity,
-              left: indicator === "brightness" ? width * 0.08 : undefined,
-              right: indicator === "volume" ? width * 0.08 : undefined,
-            },
-          ]}
-          pointerEvents="none"
-        >
-          <Feather
-            name={indicator === "brightness" ? "sun" : volume === 0 ? "volume-x" : "volume-2"}
-            size={20}
-            color="#fff"
-          />
+        <Animated.View style={[styles.gestureIndicator, { opacity: indicatorOpacity, left: indicator === "brightness" ? width * 0.08 : undefined, right: indicator === "volume" ? width * 0.08 : undefined }]} pointerEvents="none">
+          <Feather name={indicator === "brightness" ? "sun" : volume === 0 ? "volume-x" : "volume-2"} size={20} color="#fff" />
           <View style={styles.gestureTrack}>
             <View style={[styles.gestureFill, { height: `${(indicator === "brightness" ? brightness : volume) * 100}%` }]} />
           </View>
         </Animated.View>
       )}
 
-      <Animated.View 
-        style={[styles.lockedOverlay, { opacity: lockedControlsOpacity }]}
-        pointerEvents={showControls && isLocked && !isScraping && !streamError ? "box-none" : "none"}
-      >
+      <Animated.View style={[styles.lockedOverlay, { opacity: lockedControlsOpacity }]} pointerEvents={showControls && isLocked && !isScraping && !streamError ? "box-none" : "none"}>
         <View style={styles.lockedBottomContainer}>
           <TouchableOpacity style={styles.unlockCircleButton} onPress={() => setIsLocked(false)}>
             <Feather name="lock" size={20} color="#000" />
@@ -473,26 +484,16 @@ export default function PlayerScreen({ navigation, route }: any) {
         </View>
       </Animated.View>
 
-      <Animated.View 
-        style={[StyleSheet.absoluteFill, { opacity: controlsOpacity }]} 
-        pointerEvents={showControls && !isLocked && !isScraping && !streamError ? "box-none" : "none"}
-      >
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: controlsOpacity }]} pointerEvents={showControls && !isLocked && !isScraping && !streamError ? "box-none" : "none"}>
         <LinearGradient colors={["rgba(0,0,0,0.85)", "transparent"]} style={styles.topGradient} pointerEvents="box-none">
           <View style={styles.header}>
             <TouchableOpacity style={styles.headerIcon} onPress={() => navigation.goBack()}>
               <Ionicons name="arrow-back-sharp" size={28} color="#fff" />
             </TouchableOpacity>
-
             <View style={styles.headerTitleContainer}>
-              <Text style={styles.headerTitle} numberOfLines={1}>
-                {title || "Loading..."}
-              </Text>
+              <Text style={styles.headerTitle} numberOfLines={1}>{title || "Loading..."}</Text>
             </View>
-
-            <TouchableOpacity style={styles.headerIcon} onPress={() => {
-              setIsLocked(true);
-              setShowControls(false); 
-            }}>
+            <TouchableOpacity style={styles.headerIcon} onPress={() => { setIsLocked(true); setShowControls(false); }}>
               <Feather name="unlock" size={22} color="#fff" />
             </TouchableOpacity>
           </View>
@@ -500,7 +501,6 @@ export default function PlayerScreen({ navigation, route }: any) {
 
         <View style={styles.centerControls} pointerEvents="box-none">
           <View style={styles.centerRow}>
-            
             <TouchableOpacity style={styles.seekButton} onPress={() => handleSeek("rewind")}>
               <View style={styles.seekIconContainer}>
                 <Feather name="rotate-ccw" size={42} color="#fff" />
@@ -518,46 +518,37 @@ export default function PlayerScreen({ navigation, route }: any) {
                 <Text style={styles.seekIconText}>10</Text>
               </View>
             </TouchableOpacity>
-
           </View>
         </View>
 
         <LinearGradient colors={["transparent", "rgba(0,0,0,0.95)"]} style={styles.bottomGradient} pointerEvents="box-none">
           <View style={styles.progressRow}>
             <Text style={styles.timeTextLeft}>{formatTime(currentTime)}</Text>
-            
             <View 
               style={styles.progressBarWrapper}
               onLayout={(e) => (progressBarWidth.current = e.nativeEvent.layout.width)}
               onStartShouldSetResponder={() => true}
-              onResponderGrant={(e) => {
-                setIsDraggingProgress(true);
-                handleProgressMove(e);
-              }}
+              onResponderGrant={(e) => { setIsDraggingProgress(true); handleProgressMove(e); }}
               onResponderMove={handleProgressMove}
-              onResponderRelease={(e) => {
-                handleProgressRelease(e);
-                setIsDraggingProgress(false);
-              }}
+              onResponderRelease={(e) => { handleProgressRelease(e); setIsDraggingProgress(false); }}
             >
               <View style={styles.progressBarBg} pointerEvents="none">
                 <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} pointerEvents="none" />
               </View>
               <View style={[styles.progressThumb, { left: `${progressPercent}%` }]} pointerEvents="none" />
             </View>
-            
             <Text style={styles.timeTextRight}>{formatTime(remainingTime)}</Text>
           </View>
 
           <View style={styles.bottomTools}>
-            <TouchableOpacity style={styles.toolButton}>
+            <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("server")}>
               <Ionicons name="server-outline" size={20} color="#fff" />
               <Text style={styles.toolText}>Server</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.toolButton}>
+            <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("speed")}>
               <Ionicons name="speedometer-outline" size={20} color="#fff" />
-              <Text style={styles.toolText}>Speed (1x)</Text>
+              <Text style={styles.toolText}>Speed ({playbackRate}x)</Text>
             </TouchableOpacity>
 
             {isTV && (
@@ -567,7 +558,7 @@ export default function PlayerScreen({ navigation, route }: any) {
               </TouchableOpacity>
             )}
 
-            <TouchableOpacity style={styles.toolButton}>
+            <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("audioSub")}>
               <Ionicons name="chatbox-outline" size={20} color="#fff" />
               <Text style={styles.toolText}>Audio & Subtitles</Text>
             </TouchableOpacity>
@@ -586,301 +577,51 @@ export default function PlayerScreen({ navigation, route }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#000",
-  },
-  videoLayer: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#050505",
-  },
-  loadingSpinner: {
-    position: "absolute",
-    transform: [{ scale: 1.5 }],
-  },
-  
-  scrapingOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "#000",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 50,
-  },
-  scrapingTitle: {
-    color: "#808080",
-    fontSize: 18,
-    fontWeight: "600",
-    letterSpacing: 0.5,
-  },
-
-  errorOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "#000",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 60,
-  },
-  errorContainer: {
-    maxWidth: 400,
-    alignItems: "center",
-    padding: 20,
-  },
-  errorIcon: {
-    marginBottom: 16,
-  },
-  errorTitle: {
-    color: "#fff",
-    fontSize: 24,
-    fontWeight: "700",
-    textAlign: "center",
-    marginBottom: 12,
-  },
-  errorText: {
-    color: "#b3b3b3",
-    fontSize: 15,
-    fontWeight: "400",
-    textAlign: "center",
-    lineHeight: 22,
-    marginBottom: 12,
-  },
-  errorCode: {
-    color: "#666",
-    fontSize: 13,
-    fontWeight: "500",
-    textAlign: "center",
-    marginBottom: 32,
-  },
-  errorButton: {
-    backgroundColor: "#fff",
-    paddingHorizontal: 32,
-    paddingVertical: 12,
-    borderRadius: 4,
-  },
-  errorButtonText: {
-    color: "#000",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-
-  seekFeedback: {
-    position: "absolute",
-    top: "50%",
-    marginTop: -40,
-  },
+  container: { flex: 1, backgroundColor: "#000" },
+  videoLayer: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "center", alignItems: "center", backgroundColor: "#050505" },
+  loadingSpinner: { position: "absolute", transform: [{ scale: 1.5 }] },
+  scrapingOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#000", justifyContent: "center", alignItems: "center", zIndex: 50 },
+  scrapingTitle: { color: "#808080", fontSize: 18, fontWeight: "600", letterSpacing: 0.5 },
+  errorOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#000", justifyContent: "center", alignItems: "center", zIndex: 60 },
+  errorContainer: { maxWidth: 400, alignItems: "center", padding: 20 },
+  errorIcon: { marginBottom: 16 },
+  errorTitle: { color: "#fff", fontSize: 24, fontWeight: "700", textAlign: "center", marginBottom: 12 },
+  errorText: { color: "#b3b3b3", fontSize: 15, fontWeight: "400", textAlign: "center", lineHeight: 22, marginBottom: 12 },
+  errorCode: { color: "#666", fontSize: 13, fontWeight: "500", textAlign: "center", marginBottom: 32 },
+  errorButton: { backgroundColor: "#fff", paddingHorizontal: 32, paddingVertical: 12, borderRadius: 4 },
+  errorButtonText: { color: "#000", fontSize: 16, fontWeight: "700" },
+  seekFeedback: { position: "absolute", top: "50%", marginTop: -40 },
   seekFeedbackLeft: { left: "15%" },
   seekFeedbackRight: { right: "15%" },
-  seekFeedbackText: {
-    color: "rgba(255, 255, 255, 0.9)",
-    fontSize: 32,
-    fontWeight: "300",
-  },
-
-  gestureIndicator: {
-    position: "absolute",
-    top: "50%",
-    marginTop: -60,
-    width: 38,
-    height: 120,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  gestureTrack: {
-    width: 2,
-    flex: 1,
-    marginTop: 10,
-    backgroundColor: "rgba(255,255,255,0.25)",
-    borderRadius: 1,
-    overflow: "hidden",
-    justifyContent: "flex-end",
-  },
-  gestureFill: {
-    width: "100%",
-    backgroundColor: "#fff",
-  },
-
-  lockedOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: "flex-end",
-    alignItems: "center",
-    paddingBottom: 45,
-    backgroundColor: "rgba(0,0,0,0.6)",
-  },
-  lockedBottomContainer: {
-    alignItems: "center",
-  },
-  unlockCircleButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#fff",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  screenLockedText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-    marginBottom: 2,
-  },
-  tapToUnlockText: {
-    color: "#999",
-    fontSize: 11,
-    fontWeight: "500",
-  },
-
-  topGradient: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: Platform.OS === "ios" ? 45 : 25,
-    paddingTop: 25,
-  },
-  headerTitleContainer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerTitle: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  headerIcon: {
-    padding: 10,
-    zIndex: 10,
-  },
-
-  centerControls: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  centerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 80,
-  },
-  seekButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    width: 80,
-  },
-  seekIconContainer: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  seekIconText: {
-    position: "absolute",
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  playPauseButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    width: 120, 
-  },
-
-  bottomGradient: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 180,
-    justifyContent: "flex-end",
-    paddingBottom: 30,
-  },
-  progressRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginHorizontal: Platform.OS === "ios" ? 45 : 25,
-    marginBottom: 25,
-  },
-  progressBarWrapper: {
-    flex: 1,
-    height: 30,
-    justifyContent: "center",
-  },
-  progressBarBg: {
-    height: 3,
-    backgroundColor: "rgba(255,255,255,0.3)",
-    borderRadius: 2,
-  },
-  progressBarFill: {
-    height: "100%",
-    backgroundColor: "#E50914",
-    borderRadius: 2,
-  },
-  progressThumb: {
-    position: "absolute",
-    width: 16,
-    height: 16,
-    backgroundColor: "#E50914",
-    borderRadius: 8,
-    transform: [{ translateX: -8 }],
-  },
-  timeTextLeft: {
-    color: "#ccc",
-    fontSize: 12,
-    fontWeight: "600",
-    marginRight: 16,
-    fontVariant: ["tabular-nums"],
-  },
-  timeTextRight: {
-    color: "#ccc",
-    fontSize: 12,
-    fontWeight: "600",
-    marginLeft: 16,
-    fontVariant: ["tabular-nums"],
-  },
-  bottomTools: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 40, 
-    marginHorizontal: Platform.OS === "ios" ? 45 : 25,
-  },
-  toolButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  toolText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "600",
-  },
+  seekFeedbackText: { color: "rgba(255, 255, 255, 0.9)", fontSize: 32, fontWeight: "300" },
+  gestureIndicator: { position: "absolute", top: "50%", marginTop: -60, width: 38, height: 120, alignItems: "center", justifyContent: "center" },
+  gestureTrack: { width: 2, flex: 1, marginTop: 10, backgroundColor: "rgba(255,255,255,0.25)", borderRadius: 1, overflow: "hidden", justifyContent: "flex-end" },
+  gestureFill: { width: "100%", backgroundColor: "#fff" },
+  lockedOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", alignItems: "center", paddingBottom: 45, backgroundColor: "rgba(0,0,0,0.6)" },
+  lockedBottomContainer: { alignItems: "center" },
+  unlockCircleButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#fff", justifyContent: "center", alignItems: "center", marginBottom: 10 },
+  screenLockedText: { color: "#fff", fontSize: 15, fontWeight: "700", marginBottom: 2 },
+  tapToUnlockText: { color: "#999", fontSize: 11, fontWeight: "500" },
+  topGradient: { position: "absolute", top: 0, left: 0, right: 0, height: 120 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: Platform.OS === "ios" ? 45 : 25, paddingTop: 25 },
+  headerTitleContainer: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
+  headerTitle: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  headerIcon: { padding: 10, zIndex: 10 },
+  centerControls: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "center", alignItems: "center" },
+  centerRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 80 },
+  seekButton: { alignItems: "center", justifyContent: "center", width: 80 },
+  seekIconContainer: { alignItems: "center", justifyContent: "center" },
+  seekIconText: { position: "absolute", color: "#fff", fontSize: 12, fontWeight: "800" },
+  playPauseButton: { alignItems: "center", justifyContent: "center", width: 120 },
+  bottomGradient: { position: "absolute", bottom: 0, left: 0, right: 0, height: 180, justifyContent: "flex-end", paddingBottom: 30 },
+  progressRow: { flexDirection: "row", alignItems: "center", marginHorizontal: Platform.OS === "ios" ? 45 : 25, marginBottom: 25 },
+  progressBarWrapper: { flex: 1, height: 30, justifyContent: "center" },
+  progressBarBg: { height: 3, backgroundColor: "rgba(255,255,255,0.3)", borderRadius: 2 },
+  progressBarFill: { height: "100%", backgroundColor: "#E50914", borderRadius: 2 },
+  progressThumb: { position: "absolute", width: 16, height: 16, backgroundColor: "#E50914", borderRadius: 8, transform: [{ translateX: -8 }] },
+  timeTextLeft: { color: "#ccc", fontSize: 12, fontWeight: "600", marginRight: 16, fontVariant: ["tabular-nums"] },
+  timeTextRight: { color: "#ccc", fontSize: 12, fontWeight: "600", marginLeft: 16, fontVariant: ["tabular-nums"] },
+  bottomTools: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 40, marginHorizontal: Platform.OS === "ios" ? 45 : 25 },
+  toolButton: { flexDirection: "row", alignItems: "center", gap: 8 },
+  toolText: { color: "#fff", fontSize: 12, fontWeight: "600" },
 });
