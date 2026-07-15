@@ -17,7 +17,6 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import * as Brightness from "expo-brightness";
 import { useVideoPlayer, VideoView } from "expo-video";
 
-// IMPORT YOUR NEW COMPONENT HERE:
 import BottomToolsModal from "../components/BottomToolsModal";
 
 const DRAG_THRESHOLD = 6;
@@ -68,8 +67,7 @@ export default function PlayerScreen({ navigation, route }: any) {
   const streamErrorRef = useRef(streamError);
   const modalRef = useRef(activeModal);
 
-  // TODO: Move this to an environment variable so the app doesn't break if the local router IP changes
-  const API_URL = 'http://192.168.0.101:3000'; 
+  const API_URL = 'http://192.168.0.108:3000'; 
   const getApiHost = (url: string) => {
     try {
       const match = url.match(/\/\/(.*?)(?:\/|$)/);
@@ -95,7 +93,6 @@ export default function PlayerScreen({ navigation, route }: any) {
   
   const [indicator, setIndicator] = useState<"brightness" | "volume" | null>(null);
   const hideIndicatorTimeout = useRef<any>(null);
-
   const [seekFeedback, setSeekFeedback] = useState<{ amount: number; side: "left" | "right" } | null>(null);
   const seekTimeout = useRef<any>(null);
 
@@ -103,10 +100,9 @@ export default function PlayerScreen({ navigation, route }: any) {
   const gestureZone = useRef<"brightness" | "volume" | "pinch" | null>(null);
   const initialPinchDistance = useRef<number | null>(null);
   const hasPinched = useRef(false);
-  
   const lastTapTime = useRef(0);
   const singleTapTimeout = useRef<any>(null);
-  const lastTapX = useRef(0);
+  const lastTapX = useRef(0); // 🚀 Restored variable
   const progressBarWidth = useRef(0);
 
   const player = useVideoPlayer(null, (player) => {
@@ -121,9 +117,7 @@ export default function PlayerScreen({ navigation, route }: any) {
         const encodedData = rawUrl.split('/v1/proxy?data=')[1];
         const decodedJson = JSON.parse(decodeURIComponent(encodedData));
         sourceObj = { uri: decodedJson.url, headers: decodedJson.headers };
-      } catch (e) {
-        console.error("Failed to unpack proxy payload:", e);
-      }
+      } catch (e) {}
     } else {
       const activeHost = getApiHost(API_URL);
       sourceObj = rawUrl.replace("localhost:3000", activeHost);
@@ -135,21 +129,15 @@ export default function PlayerScreen({ navigation, route }: any) {
     async function loadMovieMagic() {
       setIsScraping(true);
       setStreamError(null);
-
       try {
-        const fetchUrl = mediaType === "tv"
-          ? `${API_URL}/v1/tv/${id}/seasons/1/episodes/1` 
-          : `${API_URL}/v1/movies/${id}`;
-
+        const fetchUrl = mediaType === "tv" ? `${API_URL}/v1/tv/${id}/seasons/1/episodes/1` : `${API_URL}/v1/movies/${id}`;
         const response = await fetch(fetchUrl);
         const data = await response.json();
         
         if (data.sources && data.sources.length > 0) {
           setAvailableServers(data.sources);
           setCurrentServerIndex(0);
-          
           const sourceObj = extractSourceUrl(data.sources[0].url);
-
           if (player) {
             await player.replaceAsync(sourceObj);
             player.play();
@@ -163,9 +151,20 @@ export default function PlayerScreen({ navigation, route }: any) {
         setIsScraping(false);
       }
     }
-
     if (id) loadMovieMagic();
   }, [id, mediaType, player]);
+
+  // 🚀 PAUSE LOGIC FOR FULLSCREEN MODALS
+  useEffect(() => {
+    if (!player) return;
+    if (activeModal === "server" || activeModal === "audioSub") {
+      player.pause();
+      setIsPlaying(false);
+    } else if (activeModal === null && !isScraping && !streamError) {
+      player.play();
+      setIsPlaying(true);
+    }
+  }, [activeModal, player, isScraping, streamError]);
 
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -176,28 +175,26 @@ export default function PlayerScreen({ navigation, route }: any) {
     (async () => {
       try {
         const { status } = await Brightness.requestPermissionsAsync();
-        if (status === "granted") {
-          const current = await Brightness.getBrightnessAsync();
-          setBrightness(current);
-        }
+        if (status === "granted") setBrightness(await Brightness.getBrightnessAsync());
       } catch (err) {}
     })();
   }, []);
 
+  // 🚀 INSTANT HUD HIDING
   useEffect(() => {
     Animated.parallel([
       Animated.timing(controlsOpacity, {
-        toValue: showControls && !isLocked && !isScraping && !streamError ? 1 : 0,
-        duration: 300,
+        toValue: showControls && !isLocked && !isScraping && !streamError && !activeModal ? 1 : 0,
+        duration: activeModal ? 0 : 300, 
         useNativeDriver: true,
       }),
       Animated.timing(lockedControlsOpacity, {
-        toValue: showControls && isLocked && !isScraping && !streamError ? 1 : 0,
-        duration: 300,
+        toValue: showControls && isLocked && !isScraping && !streamError && !activeModal ? 1 : 0,
+        duration: activeModal ? 0 : 300,
         useNativeDriver: true,
       }),
     ]).start();
-  }, [showControls, isLocked, isScraping, streamError]);
+  }, [showControls, isLocked, isScraping, streamError, activeModal]);
 
   useEffect(() => {
     if (showControls && isPlaying && !isDraggingProgress && !indicator && !isScraping && !streamError && !activeModal) {
@@ -218,27 +215,21 @@ export default function PlayerScreen({ navigation, route }: any) {
   }, [player, isDraggingProgress]);
 
   function togglePlayPause() {
-    if (isPlaying) player.pause();
-    else player.play();
+    if (isPlaying) player.pause(); else player.play();
     setIsPlaying(!isPlaying);
   }
 
   const changeServer = async (index: number) => {
     if (!player || index === currentServerIndex) return;
     setCurrentServerIndex(index);
-    setActiveModal(null);
     setIsScraping(true);
-
     try {
       const sourceObj = extractSourceUrl(availableServers[index].url);
       const savedTime = player.currentTime;
-      
       await player.replaceAsync(sourceObj);
       player.currentTime = savedTime;
       player.play();
-    } catch (e) {
-      console.error("Failed to switch server", e);
-    } finally {
+    } catch (e) {} finally {
       setIsScraping(false);
     }
   };
@@ -246,29 +237,17 @@ export default function PlayerScreen({ navigation, route }: any) {
   const changeSpeed = (rate: number) => {
     setPlaybackRate(rate);
     if (player) player.playbackRate = rate;
-    setActiveModal(null);
   };
 
   function handleSeek(direction: "rewind" | "forward") {
     if (streamErrorRef.current || isScrapingRef.current || modalRef.current) return;
-    
     setShowControls(true);
     const increment = direction === "rewind" ? -10 : 10;
     const side = direction === "rewind" ? "left" : "right";
-
-    setSeekFeedback((prev) => {
-      const newAmount = prev && prev.side === side ? prev.amount + increment : increment;
-      return { amount: newAmount, side };
-    });
-
-    if (player) {
-      player.currentTime = Math.max(0, player.currentTime + increment);
-    }
-
+    setSeekFeedback((prev) => ({ amount: prev && prev.side === side ? prev.amount + increment : increment, side }));
+    if (player) player.currentTime = Math.max(0, player.currentTime + increment);
     if (seekTimeout.current) clearTimeout(seekTimeout.current);
-    seekTimeout.current = setTimeout(() => {
-      setSeekFeedback(null);
-    }, 800);
+    seekTimeout.current = setTimeout(() => setSeekFeedback(null), 800);
   }
 
   function handleProgressMove(evt: any) {
@@ -281,7 +260,6 @@ export default function PlayerScreen({ navigation, route }: any) {
     if (progressBarWidth.current === 0 || !player) return;
     const touchX = Math.max(0, Math.min(evt.nativeEvent.locationX, progressBarWidth.current));
     const newTime = (touchX / progressBarWidth.current) * duration;
-    
     setCurrentTime(newTime); 
     player.currentTime = newTime; 
   }
@@ -320,7 +298,6 @@ export default function PlayerScreen({ navigation, route }: any) {
         if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current || modalRef.current) return;
         const touches = evt.nativeEvent.touches;
         hasPinched.current = touches.length >= 2;
-        
         if (touches.length >= 2) {
           gestureZone.current = "pinch";
           const dx = touches[0].pageX - touches[1].pageX;
@@ -335,73 +312,46 @@ export default function PlayerScreen({ navigation, route }: any) {
       onPanResponderMove: (evt, gestureState) => {
         if (isLockedRef.current || isScrapingRef.current || streamErrorRef.current || modalRef.current) return;
         const touches = evt.nativeEvent.touches;
-
         if (touches.length >= 2) {
           hasPinched.current = true;
           gestureZone.current = "pinch";
           const dx = touches[0].pageX - touches[1].pageX;
           const dy = touches[0].pageY - touches[1].pageY;
           const currentDistance = Math.sqrt(dx * dx + dy * dy);
-
-          if (initialPinchDistance.current === null) {
-            initialPinchDistance.current = currentDistance;
-          } else {
+          if (initialPinchDistance.current === null) initialPinchDistance.current = currentDistance;
+          else {
             const delta = currentDistance - initialPinchDistance.current;
-            if (delta > 10) setVideoFit("cover");
-            else if (delta < -10) setVideoFit("contain");
+            if (delta > 10) setVideoFit("cover"); else if (delta < -10) setVideoFit("contain");
           }
           return;
         }
-
         if (hasPinched.current || gestureZone.current === "pinch") return;
         if (Math.abs(gestureState.dy) <= DRAG_THRESHOLD) return;
-
         const delta = -gestureState.dy / GESTURE_SENSITIVITY;
         const newValue = Math.min(1, Math.max(0, gestureStartValue.current + delta));
-
-        if (gestureZone.current === "brightness") {
-          applyBrightness(newValue);
-          showIndicator("brightness");
-        } else if (gestureZone.current === "volume") {
-          applyVolume(newValue);
-          showIndicator("volume");
-        }
+        if (gestureZone.current === "brightness") { applyBrightness(newValue); showIndicator("brightness"); } 
+        else if (gestureZone.current === "volume") { applyVolume(newValue); showIndicator("volume"); }
       },
       onPanResponderRelease: (_, gestureState) => {
         if (streamErrorRef.current || modalRef.current) return; 
-
         const wasDrag = Math.abs(gestureState.dy) > DRAG_THRESHOLD || Math.abs(gestureState.dx) > DRAG_THRESHOLD;
-
         if (isLockedRef.current || isScrapingRef.current) {
           if (!wasDrag && !isScrapingRef.current) setShowControls((prev) => !prev);
           return;
         }
-
-        if (hasPinched.current) {
-          gestureZone.current = null;
-          initialPinchDistance.current = null;
-          hasPinched.current = false;
-          return;
-        }
-        
+        if (hasPinched.current) { gestureZone.current = null; initialPinchDistance.current = null; hasPinched.current = false; return; }
         if (!wasDrag) {
           const now = Date.now();
           const absoluteX = gestureState.x0; 
-
           if (now - lastTapTime.current < 300) {
             clearTimeout(singleTapTimeout.current);
-            if (absoluteX < widthRef.current / 2) handleSeek("rewind");
-            else handleSeek("forward");
+            if (absoluteX < widthRef.current / 2) handleSeek("rewind"); else handleSeek("forward");
             lastTapTime.current = now; 
           } else {
             lastTapTime.current = now;
-            singleTapTimeout.current = setTimeout(() => {
-              setShowControls((prev) => !prev);
-            }, 300);
+            singleTapTimeout.current = setTimeout(() => setShowControls((prev) => !prev), 300);
           }
-        } else {
-          hideIndicatorSoon();
-        }
+        } else { hideIndicatorSoon(); }
         gestureZone.current = null;
       },
     })
@@ -413,30 +363,107 @@ export default function PlayerScreen({ navigation, route }: any) {
   return (
     <View style={styles.container}>
       <StatusBar hidden />
-
       <View style={styles.videoLayer} pointerEvents="none">
-        <VideoView
-          style={StyleSheet.absoluteFill}
-          player={player}
-          nativeControls={false} 
-          contentFit={videoFit}
-        />
-        {duration <= 1 && !isScraping && !streamError && (
-          <ActivityIndicator size="large" color="#E50914" style={styles.loadingSpinner} />
-        )}
+        <VideoView style={StyleSheet.absoluteFill} player={player} nativeControls={false} contentFit={videoFit} />
+        {duration <= 1 && !isScraping && !streamError && <ActivityIndicator size="large" color="#E50914" style={styles.loadingSpinner} />}
       </View>
 
       <View style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,0.01)" }]} {...panResponder.panHandlers} />
 
-      <BottomToolsModal 
-        activeModal={activeModal}
-        setActiveModal={setActiveModal}
-        availableServers={availableServers}
-        currentServerIndex={currentServerIndex}
-        changeServer={changeServer}
-        playbackRate={playbackRate}
-        changeSpeed={changeSpeed}
-      />
+      {/* 🚀 EXPLICIT UNMOUNT: HUD disappears instantly */}
+      {!activeModal && (
+        <Animated.View 
+          style={[StyleSheet.absoluteFill, { opacity: controlsOpacity }]} 
+          pointerEvents={showControls && !isLocked && !isScraping && !streamError ? "box-none" : "none"}
+        >
+          <LinearGradient colors={["rgba(0,0,0,0.85)", "transparent"]} style={styles.topGradient} pointerEvents="box-none">
+            <View style={styles.header}>
+              <TouchableOpacity style={styles.headerIcon} onPress={() => navigation.goBack()}>
+                <Ionicons name="arrow-back-sharp" size={28} color="#fff" />
+              </TouchableOpacity>
+              <View style={styles.headerTitleContainer}>
+                <Text style={styles.headerTitle} numberOfLines={1}>{title || "Loading..."}</Text>
+              </View>
+              <TouchableOpacity style={styles.headerIcon} onPress={() => { setIsLocked(true); setShowControls(false); }}>
+                <Feather name="unlock" size={22} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          </LinearGradient>
+
+          <View style={styles.centerControls} pointerEvents="box-none">
+            <View style={styles.centerRow}>
+              <TouchableOpacity style={styles.seekButton} onPress={() => handleSeek("rewind")}>
+                <View style={styles.seekIconContainer}>
+                  <Feather name="rotate-ccw" size={42} color="#fff" />
+                  <Text style={styles.seekIconText}>10</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.playPauseButton} onPress={togglePlayPause}>
+                <Ionicons name={isPlaying ? "pause-sharp" : "play-sharp"} size={68} color="#fff" />
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.seekButton} onPress={() => handleSeek("forward")}>
+                <View style={styles.seekIconContainer}>
+                  <Feather name="rotate-cw" size={42} color="#fff" />
+                  <Text style={styles.seekIconText}>10</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <LinearGradient colors={["transparent", "rgba(0,0,0,0.95)"]} style={styles.bottomGradient} pointerEvents="box-none">
+            <View style={styles.progressRow}>
+              <Text style={styles.timeTextLeft}>{formatTime(currentTime)}</Text>
+              <View 
+                style={styles.progressBarWrapper}
+                onLayout={(e) => (progressBarWidth.current = e.nativeEvent.layout.width)}
+                onStartShouldSetResponder={() => true}
+                onResponderGrant={(e) => { setIsDraggingProgress(true); handleProgressMove(e); }}
+                onResponderMove={handleProgressMove}
+                onResponderRelease={(e) => { handleProgressRelease(e); setIsDraggingProgress(false); }}
+              >
+                <View style={styles.progressBarBg} pointerEvents="none">
+                  <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} pointerEvents="none" />
+                </View>
+                <View style={[styles.progressThumb, { left: `${progressPercent}%` }]} pointerEvents="none" />
+              </View>
+              <Text style={styles.timeTextRight}>{formatTime(remainingTime)}</Text>
+            </View>
+
+            <View style={styles.bottomTools}>
+              <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("server")}>
+                <Ionicons name="server-outline" size={20} color="#fff" />
+                <Text style={styles.toolText}>Server</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("speed")}>
+                <Ionicons name="speedometer-outline" size={20} color="#fff" />
+                <Text style={styles.toolText}>Speed ({playbackRate}x)</Text>
+              </TouchableOpacity>
+
+              {isTV && (
+                <TouchableOpacity style={styles.toolButton}>
+                  <Ionicons name="albums-outline" size={20} color="#fff" />
+                  <Text style={styles.toolText}>Episodes</Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("audioSub")}>
+                <Ionicons name="chatbox-outline" size={20} color="#fff" />
+                <Text style={styles.toolText}>Audio & Subtitles</Text>
+              </TouchableOpacity>
+
+              {isTV && (
+                <TouchableOpacity style={styles.toolButton}>
+                  <Ionicons name="play-skip-forward-sharp" size={22} color="#fff" />
+                  <Text style={styles.toolText}>Next Ep.</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </LinearGradient>
+        </Animated.View>
+      )}
 
       {isScraping && (
         <View style={styles.scrapingOverlay} pointerEvents="none">
@@ -451,7 +478,6 @@ export default function PlayerScreen({ navigation, route }: any) {
             <Feather name="alert-circle" size={48} color="#E50914" style={styles.errorIcon} />
             <Text style={styles.errorTitle}>Whoops, something went wrong...</Text>
             <Text style={styles.errorText}>{streamError}</Text>
-            <Text style={styles.errorCode}>Error Code: UI-800-3</Text>
             <TouchableOpacity style={styles.errorButton} onPress={() => navigation.goBack()}>
               <Text style={styles.errorButtonText}>Back to Browse</Text>
             </TouchableOpacity>
@@ -474,104 +500,15 @@ export default function PlayerScreen({ navigation, route }: any) {
         </Animated.View>
       )}
 
-      <Animated.View style={[styles.lockedOverlay, { opacity: lockedControlsOpacity }]} pointerEvents={showControls && isLocked && !isScraping && !streamError ? "box-none" : "none"}>
-        <View style={styles.lockedBottomContainer}>
-          <TouchableOpacity style={styles.unlockCircleButton} onPress={() => setIsLocked(false)}>
-            <Feather name="lock" size={20} color="#000" />
-          </TouchableOpacity>
-          <Text style={styles.screenLockedText}>Screen Locked</Text>
-          <Text style={styles.tapToUnlockText}>Tap to Unlock</Text>
-        </View>
-      </Animated.View>
-
-      <Animated.View style={[StyleSheet.absoluteFill, { opacity: controlsOpacity }]} pointerEvents={showControls && !isLocked && !isScraping && !streamError ? "box-none" : "none"}>
-        <LinearGradient colors={["rgba(0,0,0,0.85)", "transparent"]} style={styles.topGradient} pointerEvents="box-none">
-          <View style={styles.header}>
-            <TouchableOpacity style={styles.headerIcon} onPress={() => navigation.goBack()}>
-              <Ionicons name="arrow-back-sharp" size={28} color="#fff" />
-            </TouchableOpacity>
-            <View style={styles.headerTitleContainer}>
-              <Text style={styles.headerTitle} numberOfLines={1}>{title || "Loading..."}</Text>
-            </View>
-            <TouchableOpacity style={styles.headerIcon} onPress={() => { setIsLocked(true); setShowControls(false); }}>
-              <Feather name="unlock" size={22} color="#fff" />
-            </TouchableOpacity>
-          </View>
-        </LinearGradient>
-
-        <View style={styles.centerControls} pointerEvents="box-none">
-          <View style={styles.centerRow}>
-            <TouchableOpacity style={styles.seekButton} onPress={() => handleSeek("rewind")}>
-              <View style={styles.seekIconContainer}>
-                <Feather name="rotate-ccw" size={42} color="#fff" />
-                <Text style={styles.seekIconText}>10</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.playPauseButton} onPress={togglePlayPause}>
-              <Ionicons name={isPlaying ? "pause-sharp" : "play-sharp"} size={68} color="#fff" />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.seekButton} onPress={() => handleSeek("forward")}>
-              <View style={styles.seekIconContainer}>
-                <Feather name="rotate-cw" size={42} color="#fff" />
-                <Text style={styles.seekIconText}>10</Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <LinearGradient colors={["transparent", "rgba(0,0,0,0.95)"]} style={styles.bottomGradient} pointerEvents="box-none">
-          <View style={styles.progressRow}>
-            <Text style={styles.timeTextLeft}>{formatTime(currentTime)}</Text>
-            <View 
-              style={styles.progressBarWrapper}
-              onLayout={(e) => (progressBarWidth.current = e.nativeEvent.layout.width)}
-              onStartShouldSetResponder={() => true}
-              onResponderGrant={(e) => { setIsDraggingProgress(true); handleProgressMove(e); }}
-              onResponderMove={handleProgressMove}
-              onResponderRelease={(e) => { handleProgressRelease(e); setIsDraggingProgress(false); }}
-            >
-              <View style={styles.progressBarBg} pointerEvents="none">
-                <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} pointerEvents="none" />
-              </View>
-              <View style={[styles.progressThumb, { left: `${progressPercent}%` }]} pointerEvents="none" />
-            </View>
-            <Text style={styles.timeTextRight}>{formatTime(remainingTime)}</Text>
-          </View>
-
-          <View style={styles.bottomTools}>
-            <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("server")}>
-              <Ionicons name="server-outline" size={20} color="#fff" />
-              <Text style={styles.toolText}>Server</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("speed")}>
-              <Ionicons name="speedometer-outline" size={20} color="#fff" />
-              <Text style={styles.toolText}>Speed ({playbackRate}x)</Text>
-            </TouchableOpacity>
-
-            {isTV && (
-              <TouchableOpacity style={styles.toolButton}>
-                <Ionicons name="albums-outline" size={20} color="#fff" />
-                <Text style={styles.toolText}>Episodes</Text>
-              </TouchableOpacity>
-            )}
-
-            <TouchableOpacity style={styles.toolButton} onPress={() => setActiveModal("audioSub")}>
-              <Ionicons name="chatbox-outline" size={20} color="#fff" />
-              <Text style={styles.toolText}>Audio & Subtitles</Text>
-            </TouchableOpacity>
-
-            {isTV && (
-              <TouchableOpacity style={styles.toolButton}>
-                <Ionicons name="play-skip-forward-sharp" size={22} color="#fff" />
-                <Text style={styles.toolText}>Next Ep.</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </LinearGradient>
-      </Animated.View>
+      <BottomToolsModal 
+        activeModal={activeModal}
+        setActiveModal={setActiveModal}
+        availableServers={availableServers}
+        currentServerIndex={currentServerIndex}
+        changeServer={changeServer}
+        playbackRate={playbackRate}
+        changeSpeed={changeSpeed}
+      />
     </View>
   );
 }
@@ -587,7 +524,6 @@ const styles = StyleSheet.create({
   errorIcon: { marginBottom: 16 },
   errorTitle: { color: "#fff", fontSize: 24, fontWeight: "700", textAlign: "center", marginBottom: 12 },
   errorText: { color: "#b3b3b3", fontSize: 15, fontWeight: "400", textAlign: "center", lineHeight: 22, marginBottom: 12 },
-  errorCode: { color: "#666", fontSize: 13, fontWeight: "500", textAlign: "center", marginBottom: 32 },
   errorButton: { backgroundColor: "#fff", paddingHorizontal: 32, paddingVertical: 12, borderRadius: 4 },
   errorButtonText: { color: "#000", fontSize: 16, fontWeight: "700" },
   seekFeedback: { position: "absolute", top: "50%", marginTop: -40 },
@@ -597,11 +533,6 @@ const styles = StyleSheet.create({
   gestureIndicator: { position: "absolute", top: "50%", marginTop: -60, width: 38, height: 120, alignItems: "center", justifyContent: "center" },
   gestureTrack: { width: 2, flex: 1, marginTop: 10, backgroundColor: "rgba(255,255,255,0.25)", borderRadius: 1, overflow: "hidden", justifyContent: "flex-end" },
   gestureFill: { width: "100%", backgroundColor: "#fff" },
-  lockedOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", alignItems: "center", paddingBottom: 45, backgroundColor: "rgba(0,0,0,0.6)" },
-  lockedBottomContainer: { alignItems: "center" },
-  unlockCircleButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#fff", justifyContent: "center", alignItems: "center", marginBottom: 10 },
-  screenLockedText: { color: "#fff", fontSize: 15, fontWeight: "700", marginBottom: 2 },
-  tapToUnlockText: { color: "#999", fontSize: 11, fontWeight: "500" },
   topGradient: { position: "absolute", top: 0, left: 0, right: 0, height: 120 },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: Platform.OS === "ios" ? 45 : 25, paddingTop: 25 },
   headerTitleContainer: { position: "absolute", left: 0, right: 0, alignItems: "center", justifyContent: "center" },
